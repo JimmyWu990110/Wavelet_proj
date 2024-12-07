@@ -1,47 +1,32 @@
 import os
 import numpy as np
 import torch
-import torchvision as tv
-import torchvision.transforms as transforms
+from torch.utils.data import DataLoader
 import torch.nn as nn
 from torch import optim
 from tqdm import tqdm
 import matplotlib.pyplot as plt
 
+from BSD import BSDDataset
 from DAE import DAE
 from DnCNN import DnCNN
 
 base_dir = "/home/jingpu/Projects/Wavelet_proj"
-n_epoch = 30
-noise_level = 50
-model = DAE(num_channels=3)
-model_name = "DAE_"+str(noise_level)
-# model = DnCNN(num_channels=3, num_layers=17)
-# model_name = "DnCNN_"+str(noise_level)
+n_epoch = 50
+noise_level = 10
+# model = DAE(num_channels=3)
+# model_name = "DAE_"+str(noise_level)
+model = DnCNN(num_channels=3, num_layers=17)
+model_name = "DnCNN_"+str(noise_level)
 
-transform = transforms.Compose([ # original size: [3, 32, 32]
-    transforms.Resize((128, 128)),
-    transforms.ToTensor(),
-])
+train_set = BSDDataset(base_dir=base_dir, split="train")
+test_set = BSDDataset(base_dir=base_dir, split="test")
 
-# (50000, 2); each item: (img, label)
-train_set = tv.datasets.CIFAR10(root=os.path.join(base_dir, "data"),
-                                train=True,
-                                download=False,
-                                transform=transform)
-# (10000, 2)
-test_set = tv.datasets.CIFAR10(root=os.path.join(base_dir, "data"),
-                               train=False,
-                               download=False,
-                               transform=transform)
-
-train_loader = torch.utils.data.DataLoader(train_set, batch_size=16, 
-                                           shuffle=True, num_workers=4)
-test_loader = torch.utils.data.DataLoader(test_set, batch_size=16, 
-                                          shuffle=True, num_workers=4)
+train_loader = DataLoader(train_set, batch_size=4, shuffle=True, num_workers=4)
+test_loader = DataLoader(test_set, batch_size=4, shuffle=False, num_workers=4)
 
 criterion = nn.MSELoss()
-optimizer = torch.optim.Adam(model.parameters(), lr=0.001)
+optimizer = torch.optim.Adam(model.parameters(), lr=0.0001)
 
 device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
 print("device:", device)
@@ -86,7 +71,7 @@ for epoch in tqdm(range(n_epoch)):
     test_loss_all.append(test_loss/len(test_set))
 
 # save model and results
-output_dir = os.path.join(base_dir, "results", model_name)
+output_dir = os.path.join(base_dir, "results_BSD", model_name)
 os.makedirs(output_dir, exist_ok=True)
 torch.save(model, os.path.join(output_dir, "model.pt"))
 np.save(os.path.join(output_dir, "train_loss.npy"), np.array(train_loss_all))
@@ -97,3 +82,4 @@ plt.plot(test_loss_all, label="testing loss")
 plt.xlabel("Epoch")
 plt.legend()
 plt.savefig(os.path.join(output_dir, "loss.png"), format="png")
+

@@ -1,31 +1,21 @@
 import os
 import torch
-import torchvision as tv
-import torchvision.transforms as transforms
+from torch.utils.data import DataLoader
 import numpy as np
 import cv2
 from skimage.metrics import peak_signal_noise_ratio, structural_similarity
 
+from BSD import BSDDataset
 
 base_dir = "/home/jingpu/Projects/Wavelet_proj"
-noise_level = 50
-model_name = "DAE_"+str(noise_level)
-# model_name = "DnCNN_"+str(noise_level)
+noise_level = 10
+# model_name = "DAE_"+str(noise_level)
+model_name = "DnCNN_"+str(noise_level)
 
-transform = transforms.Compose([ # original size: [3, 32, 32]
-    transforms.Resize((128, 128)),
-    transforms.ToTensor(),
-])
+test_set = BSDDataset(base_dir=base_dir, split="test")
+test_loader = DataLoader(test_set, batch_size=4, shuffle=False, num_workers=4)
 
-# (10000, 2)
-test_set = tv.datasets.CIFAR10(root=os.path.join(base_dir, "data"),
-                               train=False,
-                               download=False,
-                               transform=transform)
-test_loader = torch.utils.data.DataLoader(test_set, batch_size=16, 
-                                          shuffle=True, num_workers=4)
-
-output_dir = os.path.join(base_dir, "results", model_name)
+output_dir = os.path.join(base_dir, "results_BSD", model_name)
 original_path = os.path.join(output_dir, "original_images")
 noisy_path = os.path.join(output_dir, "noisy_images")
 denoised_path = os.path.join(output_dir, "denoised_images")
@@ -58,7 +48,7 @@ for j, data in enumerate(test_loader, 0):
         cv2.imwrite(os.path.join(noisy_path, str(counter)+".png"), cv2.cvtColor(noisy_image, cv2.COLOR_RGB2BGR))
         cv2.imwrite(os.path.join(denoised_path, str(counter)+".png"), cv2.cvtColor(output, cv2.COLOR_RGB2BGR))
         counter += 1
-    if j >= 7:
+    if counter > 100:
         break
 
 PSNR_noisy = []
@@ -77,5 +67,3 @@ print("PSNR noisy:", format(np.mean(PSNR_noisy), ".2f"), "+-", format(np.std(PSN
 print("SSIM noisy:", format(np.mean(SSIM_noisy), ".3f"), "+-", format(np.std(SSIM_noisy), ".3f"))
 print("PSNR denoised:", format(np.mean(PSNR_denoised), ".2f"), "+-", format(np.std(PSNR_denoised), ".2f"))
 print("SSIM denoised:", format(np.mean(SSIM_denoised), ".3f"), "+-", format(np.std(SSIM_denoised), ".3f"))
-
-
