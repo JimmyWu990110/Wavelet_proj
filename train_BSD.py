@@ -11,7 +11,7 @@ from BSD import BSDDataset
 from DAE import DAE
 from DnCNN import DnCNN
 
-base_dir = "/home/jingpu/Projects/Wavelet_proj"
+base_dir = ""
 n_epoch = 50
 noise_level = 10
 # model = DAE(num_channels=3)
@@ -57,16 +57,17 @@ for epoch in tqdm(range(n_epoch)):
     # testing
     test_loss = 0
     model.eval()
-    for data in test_loader:
-        images, _ = data
-        noisy_images = images + (noise_level/255)*torch.randn(*images.shape)
-        noisy_images = np.clip(noisy_images, 0, 1)
-        images = images.to(device) # move to GPU
-        noisy_images = noisy_images.to(device)
-        outputs = model(noisy_images) # forward
-        outputs = outputs.to(device)
-        loss = criterion(outputs, images)
-        test_loss += loss.item()
+    with torch.no_grad():
+        for data in test_loader:
+            images, _ = data
+            noisy_images = images + (noise_level/255)*torch.randn(*images.shape)
+            noisy_images = np.clip(noisy_images, 0, 1)
+            images = images.to(device) # move to GPU
+            noisy_images = noisy_images.to(device)
+            outputs = model(noisy_images) # forward
+            outputs = outputs.to(device)
+            loss = criterion(outputs, images)
+            test_loss += loss.item()
     print("Epoch", epoch+1, "testing loss:", format(test_loss, ".3f"))
     test_loss_all.append(test_loss/len(test_set))
 

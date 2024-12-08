@@ -193,3 +193,9 @@ class WaveDiffusion(torch.nn.Module):
         for t in reversed(range(self.time_range)):
             x = self.denoise(x, torch.tensor(t, device=self.device))
         return x
+    
+    @torch.no_grad()
+    def generational_denoise(self, x, t):  # x: [B, C, H, W]
+        for i in reversed(range(t)):
+            x = self.denoise(x, torch.tensor(i, device=self.device))
+        return x

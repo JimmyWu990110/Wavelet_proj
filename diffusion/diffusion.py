@@ -147,6 +147,7 @@ class Diffusion(torch.nn.Module):
         return x
 
     def loss(self, batch):
+        batch = batch.to(self.device)
         times = torch.randint(0, self.time_range, (batch.shape[0],), device=self.device)
         noises = torch.randn_like(batch, device=self.device)
         noisy_imgs = torch.stack([self.get_noisy_img(img, noise, t) for img, noise, t in zip(batch, noises, times)], dim=0)
