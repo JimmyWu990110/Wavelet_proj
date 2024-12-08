@@ -1,5 +1,6 @@
 import torch
 import math
+from pytorch_wavelets import DWTForward, DWTInverse
 
 class ImageAttentionBlock(torch.nn.Module):
     def __init__(self, hidden_dim, image_size, num_head=4):
@@ -24,6 +25,18 @@ class ImageAttentionBlock(torch.nn.Module):
         x = x.transpose(1, 2).reshape(-1, self.hidden_dim, self.image_size, self.image_size)
         return x
 
+class BottleNeckBlock(torch.nn.Module):
+    def __init__(self, in_channels, out_channels):
+        super().__init__()
+        self.conv = torch.nn.Conv2d(in_channels, out_channels, kernel_size=1)
+        self.norm = torch.nn.GroupNorm(1, out_channels)
+        self.act = torch.nn.GELU()
+
+    def forward(self, x):
+        x = self.conv(x)
+        x = self.norm(x)
+        x = self.act(x)
+        return x
 
 class BaseConvBlock(torch.nn.Module):
     def __init__(self, in_channels, out_channels, mid_channels=None, residual=False):
@@ -50,52 +63,64 @@ class BaseConvBlock(torch.nn.Module):
         return x
 
 
-class DownSampleBlock(torch.nn.Module):
-    def __init__(self, in_channels, out_channels):
+class WaveDownSampleBlock(torch.nn.Module):
+    def __init__(self, in_channels, out_channels, wave='haar'):
         super().__init__()
-        self.maxpool_conv = torch.nn.Sequential(
-            torch.nn.MaxPool2d(2),
+        self.dwt = DWTForward(J=1, wave=wave, mode='symmetric')
+        self.conv = torch.nn.Sequential(
+            BottleNeckBlock(in_channels * 4, in_channels),  # Adjust Channels
             BaseConvBlock(in_channels, in_channels, residual=True),
             BaseConvBlock(in_channels, out_channels),
         )
 
     def forward(self, x):
-        x = self.maxpool_conv(x)
+        xl, xh = self.dwt(x)
+        b, c, _, h, w = xh[0].shape
+        xh = xh[0].reshape(b, 3 * c, h, w)
+        x = torch.cat([xl, xh], dim=1)
+        x = self.conv(x)
         return x
     
 
-class UpSampleBlock(torch.nn.Module):
-    def __init__(self, in_channels, out_channels):
+class WaveUpSampleBlock(torch.nn.Module):
+    def __init__(self, in_channels, out_channels, wave='haar'):
         super().__init__()
-        self.up = torch.nn.Upsample(scale_factor=2, mode='bilinear', align_corners=True)
-        self.conv1 = BaseConvBlock(in_channels, in_channels, residual=True)
-        self.conv2 = BaseConvBlock(in_channels, out_channels, in_channels // 2)
+        self.bottle = BottleNeckBlock(in_channels // 2, 2 * in_channels)
+        self.idwt = DWTInverse(wave=wave, mode='symmetric')
+        self.conv = torch.nn.Sequential(
+            BaseConvBlock(in_channels, in_channels, residual=True), 
+            BaseConvBlock(in_channels, out_channels, in_channels // 2)
+        )
 
     def forward(self, x, skip):  # Skip Connection
-        x = self.up(x)
+        b, c, h, w = x.shape
+        x = self.bottle(x)
+        xl = x[:, :c]
+        xh = x[:, c:].reshape(b, c, 3, h, w)
+        x = self.idwt((xl, [xh]))
         x = torch.cat([x, skip], dim=1)
-        x = self.conv1(x)
-        x = self.conv2(x)
+        x = self.conv(x)
         return x
     
 
-class Diffusion(torch.nn.Module):
-    def __init__(self, image_size, image_channels, time_range, beta_range=(1e-4, 0.02)):
+class WaveDiffusion(torch.nn.Module):
+    def __init__(self, image_size, image_channels, time_range, beta_range=(1e-4, 0.02), device="cuda"):
         super().__init__()
         self.beta_range = beta_range
         self.time_range = time_range
         self.image_size = image_size
+        self.device = device
         
         self.in_conv = BaseConvBlock(image_channels, 64)
-        self.down1 = DownSampleBlock(64, 128)
-        self.down2 = DownSampleBlock(128, 256)
+        self.down1 = WaveDownSampleBlock(64, 128)
+        self.down2 = WaveDownSampleBlock(128, 256)
         self.att1 = ImageAttentionBlock(256, image_size // 4)
-        self.down3 = DownSampleBlock(256, 256)
+        self.down3 = WaveDownSampleBlock(256, 256)
         self.att2 = ImageAttentionBlock(256, image_size // 8)
-        self.up1 = UpSampleBlock(512, 128)
+        self.up1 = WaveUpSampleBlock(512, 128)
         self.att3 = ImageAttentionBlock(128, image_size // 4)
-        self.up2 = UpSampleBlock(256, 64)
-        self.up3 = UpSampleBlock(128, 64)
+        self.up2 = WaveUpSampleBlock(256, 64)
+        self.up3 = WaveUpSampleBlock(128, 64)
         self.out_conv = torch.nn.Conv2d(64, image_channels, kernel_size=1)
 
     @torch.no_grad()
@@ -161,4 +186,10 @@ class Diffusion(torch.nn.Module):
             z = 0
         pred_noise = self(x, t.reshape(1, 1).repeat(x.shape[0], 1))
         return self.get_denoised_img(x, pred_noise, z, t)
-    
+
+    @torch.no_grad()
+    def generate(self, n):
+        x = torch.randn(n, 3, self.image_size, self.image_size, device=self.device)
+        for t in reversed(range(self.time_range)):
+            x = self.denoise(x, torch.tensor(t, device=self.device))
+        return x
