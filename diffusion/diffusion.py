@@ -111,12 +111,12 @@ class Diffusion(torch.nn.Module):
     
     def forward(self, x, t):
         x1 = self.in_conv(x)
-        x2 = self.down1(x1) + self.pos_encoding(t, 128, self.image_size // 2)
-        x3 = self.down2(x2) + self.pos_encoding(t, 256, self.image_size // 4)
+        x2 = self.down1(x1) + self.pos_encoding(t, 64, self.image_size // 2)
+        x3 = self.down2(x2) + self.pos_encoding(t, 128, self.image_size // 4)
         x3 = self.att1(x3)
-        x4 = self.down3(x3) + self.pos_encoding(t, 256, self.image_size // 8)
+        x4 = self.down3(x3) + self.pos_encoding(t, 128, self.image_size // 8)
         x4 = self.att2(x4)
-        x = self.up1(x4, x3) + self.pos_encoding(t, 128, self.image_size // 4)
+        x = self.up1(x4, x3) + self.pos_encoding(t, 64, self.image_size // 4)
         x = self.att3(x)
         x = self.up2(x, x2) + self.pos_encoding(t, 64, self.image_size // 2)
         x = self.up3(x, x1) + self.pos_encoding(t, 64, self.image_size)
@@ -134,7 +134,7 @@ class Diffusion(torch.nn.Module):
     
     def get_noisy_img(self, img, noise, t):
         alpha_bar = self.get_alpha_bar(t)
-        return math.sqrt(alpha_bar) * img + math.sqrt(1-alpha_bar) * noise
+        return math.sqrt(alpha_bar) * img + math.sqrt(1 - alpha_bar) * noise
 
     def get_denoised_img(self, img, noise, z, t):
         alpha = self.get_alpha(t)
@@ -148,7 +148,7 @@ class Diffusion(torch.nn.Module):
 
     def loss(self, batch):
         batch = batch.to(self.device)
-        times = torch.randint(0, self.time_range, (batch.shape[0],), device=self.device)
+        times = torch.randint(1, self.time_range, (batch.shape[0],), device=self.device)
         noises = torch.randn_like(batch, device=self.device)
         noisy_imgs = torch.stack([self.get_noisy_img(img, noise, t) for img, noise, t in zip(batch, noises, times)], dim=0)
         pred_noise = self(noisy_imgs, times.unsqueeze(-1).type(torch.float))

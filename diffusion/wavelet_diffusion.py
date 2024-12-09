@@ -104,13 +104,18 @@ class WaveUpSampleBlock(torch.nn.Module):
     
 
 class WaveDiffusion(torch.nn.Module):
-    def __init__(self, image_size, image_channels, time_range, wave='haar', beta_range=(1e-4, 0.02), device="cuda"):
+    def __init__(self, image_size, image_channels, time_range, wave='haar', beta_range=(1e-4, 0.02), wavespace=False, device="cuda"):
         super().__init__()
         self.beta_range = beta_range
         self.time_range = time_range
         self.image_size = image_size
         self.device = device
-        
+        self.wavespace = wavespace
+        if wavespace:
+            image_channels *= 4
+            image_size /= 2
+            self.in_dwt = DWTForward(J=1, wave=wave, mode='symmetric')
+            self.out_idwt = DWTInverse(wave=wave, mode='symmetric')
         self.in_conv = BaseConvBlock(image_channels, 64)
         self.down1 = WaveDownSampleBlock(64, 128, wave=wave)
         self.down2 = WaveDownSampleBlock(128, 256, wave=wave)
@@ -134,6 +139,11 @@ class WaveDiffusion(torch.nn.Module):
         return enc.reshape(-1, channels, 1, 1).repeat(1, 1, embed_size, embed_size)
     
     def forward(self, x, t):
+        if self.wavespace:
+            xl, xh = self.in_dwt(x)
+            b, c, _, h, w = xh[0].shape
+            xh = xh[0].reshape(b, 3 * c, h, w)
+            x = torch.cat([xl, xh], dim=1)
         x1 = self.in_conv(x)
         x2 = self.down1(x1) + self.pos_encoding(t, 128, self.image_size // 2)
         x3 = self.down2(x2) + self.pos_encoding(t, 256, self.image_size // 4)
@@ -145,20 +155,25 @@ class WaveDiffusion(torch.nn.Module):
         x = self.up2(x, x2) + self.pos_encoding(t, 64, self.image_size // 2)
         x = self.up3(x, x1) + self.pos_encoding(t, 64, self.image_size)
         x = self.out_conv(x)
+        if self.wavespace:
+            c = x.shape[1] // 4
+            xl = x[:, :c]
+            xh = x[:, c:].reshape(b, c, 3, h, w)
+            x = self.idwt((xl, [xh]))
         return x
 
     def get_beta(self, t):
-        return torch.tensor(self.beta_range[0] + (self.beta_range[1] - self.beta_range[0]) * t / self.time_range, device=self.device)
+        return self.beta_range[0] + (self.beta_range[1] - self.beta_range[0]) * t / self.time_range
     
     def get_alpha(self, t):
         return 1 - self.get_beta(t)
     
     def get_alpha_bar(self, t):
-        return torch.stack([self.get_alpha(i) for i in range(t)], dim=0).prod()
+        return math.prod([self.get_alpha(i) for i in range(t)])
     
     def get_noisy_img(self, img, noise, t):
         alpha_bar = self.get_alpha_bar(t)
-        return torch.sqrt(alpha_bar) * img + torch.sqrt(1-alpha_bar) * noise
+        return math.sqrt(alpha_bar) * img + math.sqrt(1 - alpha_bar) * noise
 
     def get_denoised_img(self, img, noise, z, t):
         alpha = self.get_alpha(t)
@@ -172,7 +187,7 @@ class WaveDiffusion(torch.nn.Module):
 
     def loss(self, batch):
         batch = batch.to(self.device)
-        times = torch.randint(0, self.time_range, (batch.shape[0],), device=self.device)
+        times = torch.randint(1, self.time_range, (batch.shape[0],), device=self.device)
         noises = torch.randn_like(batch, device=self.device)
         noisy_imgs = torch.stack([self.get_noisy_img(img, noise, t) for img, noise, t in zip(batch, noises, times)], dim=0)
         pred_noise = self(noisy_imgs, times.unsqueeze(-1).type(torch.float))
@@ -191,12 +206,12 @@ class WaveDiffusion(torch.nn.Module):
     @torch.no_grad()
     def generate(self, n):
         x = torch.randn(n, 3, self.image_size, self.image_size, device=self.device)
-        for t in reversed(range(self.time_range)):
+        for t in range(self.time_range, 0, -1):
             x = self.denoise(x, torch.tensor(t, device=self.device))
         return x
-    
+        
     @torch.no_grad()
     def generational_denoise(self, x, t):  # x: [B, C, H, W]
-        for i in reversed(range(t)):
+        for i in range(t, 0, -1):
             x = self.denoise(x, torch.tensor(i, device=self.device))
         return x
