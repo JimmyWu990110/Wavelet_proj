@@ -167,12 +167,12 @@ class Diffusion(torch.nn.Module):
     @torch.no_grad()
     def generate(self, n):
         x = torch.randn(n, 3, self.image_size, self.image_size, device=self.device)
-        for t in reversed(range(self.time_range)):
+        for t in range(self.time_range, 0, -1):
             x = self.denoise(x, torch.tensor(t, device=self.device))
         return x
     
     @torch.no_grad()
     def generational_denoise(self, x, t):  # x: [B, C, H, W]
-        for i in reversed(range(t)):
+        for i in range(t, 0, -1):
             x = self.denoise(x, torch.tensor(i, device=self.device))
         return x
