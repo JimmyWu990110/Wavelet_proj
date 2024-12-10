@@ -1,4 +1,5 @@
 import torch
+from torch.utils.data import DataLoader
 from tqdm import tqdm
 import numpy as np
 import os
@@ -7,10 +8,13 @@ import cv2
 from skimage.metrics import peak_signal_noise_ratio, structural_similarity
 
 
-def train(model, optimizer, epochs, train_loader, test_loader, model_name, compute_loss, base_dir=""):
+
+
+def train(model, optimizer, epochs, train_set, test_set, batch_size, model_name, compute_loss, base_dir=""):
     train_loss_all = []
     test_loss_all = []
-    
+    train_loader = DataLoader(train_set, batch_size=batch_size, shuffle=True, num_workers=4)
+    test_loader = DataLoader(test_set, batch_size=batch_size, shuffle=False, num_workers=4)
     bar = tqdm(range(epochs))
     
     for epoch in bar:
@@ -51,8 +55,9 @@ def train(model, optimizer, epochs, train_loader, test_loader, model_name, compu
     plt.savefig(os.path.join(output_dir, "loss.png"), format="png")
 
 
-def test(model, test_loader, model_name, noise_level, denoise, base_dir="", **kwargs):
+def test(model, test_set, batch_size, model_name, noise_level, denoise, base_dir="", **kwargs):
     print("noise_level:", noise_level)
+    test_loader = DataLoader(test_set, batch_size=batch_size, shuffle=False, num_workers=4)
     output_dir = os.path.join(base_dir, "results_BSD", model_name + str(noise_level))
     original_path = os.path.join(output_dir, "original_images")
     noisy_path = os.path.join(output_dir, "noisy_images")

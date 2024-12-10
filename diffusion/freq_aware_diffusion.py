@@ -29,49 +29,41 @@ class BottleNeckBlock(torch.nn.Module):
     def __init__(self, in_channels, out_channels):
         super().__init__()
         self.conv = torch.nn.Conv2d(in_channels, out_channels, kernel_size=1)
-        self.norm = torch.nn.GroupNorm(1, out_channels)
-        self.act = torch.nn.GELU()
 
     def forward(self, x):
         x = self.conv(x)
-        x = self.norm(x)
-        x = self.act(x)
         return x
 
 class BaseConvBlock(torch.nn.Module):
-    def __init__(self, in_channels, out_channels, mid_channels=None, residual=False):
+    def __init__(self, in_channels, out_channels, groups=1):
         super().__init__()
-        if not mid_channels:
-            mid_channels = out_channels
-        self.residual = residual
-        self.conv1 = torch.nn.Conv2d(in_channels, mid_channels, kernel_size=3, padding=1, bias=False)
-        self.norm1 = torch.nn.GroupNorm(1, mid_channels)
-        self.act1 = torch.nn.GELU()
-        self.conv2 = torch.nn.Conv2d(mid_channels, out_channels, kernel_size=3, padding=1, bias=False)
-        self.norm2 = torch.nn.GroupNorm(1, out_channels)
+        self.conv = torch.nn.Conv2d(in_channels, out_channels, kernel_size=3, padding=1, bias=False, groups=groups)
+        self.norm = torch.nn.GroupNorm(groups, out_channels)
+        self.act = torch.nn.GELU()
     
     def forward(self, x):
-        if self.residual:
-            residual = x
-        x = self.conv1(x)
-        x = self.norm1(x)
-        x = self.act1(x)
-        x = self.conv2(x)
-        x = self.norm2(x)
-        if self.residual:
-            x = torch.nn.functional.gelu(x + residual)
+        x = self.norm(x)
+        x = self.act(x)
+        x = self.conv(x)
         return x
 
+class ResidualBlock(torch.nn.Module):
+    def __init__(self, in_channels, out_channels):
+        super().__init__()
+        self.l1 = BaseConvBlock(in_channels, in_channels)
+        self.l2 = BaseConvBlock(in_channels, out_channels)
 
-class WaveDownSampleBlock(torch.nn.Module):
+    def forward(self, x):
+        res = x
+        x = self.l1(x)
+        x = self.l2(x)
+        return (x + res) / math.sqrt(2)
+
+class WaveShort(torch.nn.Module):
     def __init__(self, in_channels, out_channels, wave='haar'):
         super().__init__()
         self.dwt = DWTForward(J=1, wave=wave, mode='symmetric')
-        self.conv = torch.nn.Sequential(
-            BottleNeckBlock(in_channels * 4, in_channels),  # Adjust Channels
-            BaseConvBlock(in_channels, in_channels, residual=True),
-            BaseConvBlock(in_channels, out_channels),
-        )
+        self.conv = torch.nn.Conv2d(4 * in_channels, out_channels, kernel_size=3, padding=1, bias=False, groups=4)
 
     def forward(self, x):
         xl, xh = self.dwt(x)
@@ -80,36 +72,71 @@ class WaveDownSampleBlock(torch.nn.Module):
         x = torch.cat([xl, xh], dim=1)
         x = self.conv(x)
         return x
+
+class WaveBottleNeckBlock(torch.nn.Module):
+    def __init__(self, in_channels, out_channels, wave='haar'):
+        super().__init__()
+        self.dwt = DWTForward(J=1, wave=wave, model='symmetric')
+        self.idwt = DWTInverse(wave=wave, model='symmetric')
+        self.res = ResidualBlock(in_channels, out_channels)
+
+    def forward(self, x):
+        xl, xh = self.dwt(x)
+        xl = self.res(xl / 2) * 2
+        x = self.idwt((xl, xh))
+        return x
+
+class WaveDownSampleBlock(torch.nn.Module):
+    def __init__(self, in_channels, out_channels, wave='haar'):
+        super().__init__()
+        self.dwt = DWTForward(J=1, wave=wave, mode='symmetric')
+        self.conv1 = BaseConvBlock(in_channels, out_channels)
+        self.conv2 = BaseConvBlock(out_channels, out_channels)
+        self.short = BottleNeckBlock(in_channels, out_channels // 4)
+
+    def forward(self, x, t_emb):
+        h = self.conv1(x)
+        x = self.short(x)
+        hl, hh = self.dwt(h)
+        b, c, _, w, h = hh[0].shape
+        hh = hh[0].reshape(b, 3 * c, w, h)
+        xl, xh = self.dwt(h)
+        hl = hl / 2.
+        x = xl / 2.
+        h = hl + t_emb
+        h = self.conv2(hl)
+        return (x + h) / math.sqrt(2), hh
     
 
 class WaveUpSampleBlock(torch.nn.Module):
     def __init__(self, in_channels, out_channels, wave='haar'):
         super().__init__()
-        self.bottle = BottleNeckBlock(in_channels // 2, 2 * in_channels)
         self.idwt = DWTInverse(wave=wave, mode='symmetric')
-        self.conv = torch.nn.Sequential(
-            BaseConvBlock(in_channels, in_channels, residual=True), 
-            BaseConvBlock(in_channels, out_channels, in_channels // 2)
-        )
+        self.conv1 = BaseConvBlock(in_channels, out_channels)
+        self.conv2 = BaseConvBlock(out_channels, out_channels)
+        self.short = BottleNeckBlock(in_channels, out_channels)
+        self.skip_conv = BaseConvBlock(in_channels * 3, out_channels * 3, groups=3)
 
-    def forward(self, x, skip):  # Skip Connection
-        b, c, h, w = x.shape
-        x = self.bottle(x)
-        xl = x[:, :c]
-        xh = x[:, c:].reshape(b, c, 3, h, w)
-        x = self.idwt((xl, [xh]))
-        x = torch.cat([x, skip], dim=1)
-        x = self.conv(x)
-        return x
+    def forward(self, x, skip, t_emb):  # Skip Connection
+        h = self.conv1(x)
+        x = self.short(x)
+        b, c, w, h = x.shape
+        skip = self.skip_conv(skip / 2.) * 2.
+        skip = skip.reshape(b, c, 3, w, h)
+        h = self.idwt((2. * h, [skip]))
+        x = self.idwt((2. * x, [skip]))
+        h = h + t_emb
+        h = self.conv2(h)
+        return (x + h) / math.sqrt(2)
     
 
-class WaveDiffusion(torch.nn.Module):
+class FreqAwareDiffusion(torch.nn.Module):
     def __init__(self, image_size, image_channels, time_range, wave='haar', beta_range=(1e-4, 0.02), wavespace=False, device="cuda", role="denoise"):
         super().__init__()
         self.beta_range = beta_range
         self.time_range = time_range
         self.image_size = image_size
-        self.role = role
+        self.role = "denoise"
         self.device = device
         self.wavespace = wavespace
         if wavespace:
@@ -117,17 +144,23 @@ class WaveDiffusion(torch.nn.Module):
             image_size = image_size // 2
             self.in_dwt = DWTForward(J=1, wave=wave, mode='symmetric')
             self.out_idwt = DWTInverse(wave=wave, mode='symmetric')
-        self.in_conv = BaseConvBlock(image_channels, 64)
+        
+        self.short1 = WaveBottleBlock(image_channels, 128, wave=wave)
+        self.short2 = WaveBottleBlock(128, 256, wave=wave)
+        
+        self.in_conv = torch.nn.Conv2d(image_channels, 64, kernel_size=3, padding=1, bias=False, groups=groups)
+        self.res1 = ResidualBlock(64, 64)
         self.down1 = WaveDownSampleBlock(64, 128, wave=wave)
+        self.res2 = ResidualBlock(128, 128)
         self.down2 = WaveDownSampleBlock(128, 256, wave=wave)
-        self.att1 = ImageAttentionBlock(256, image_size // 4)
-        self.down3 = WaveDownSampleBlock(256, 256, wave=wave)
-        self.att2 = ImageAttentionBlock(256, image_size // 8)
-        self.up1 = WaveUpSampleBlock(512, 128, wave=wave)
-        self.att3 = ImageAttentionBlock(128, image_size // 4)
-        self.up2 = WaveUpSampleBlock(256, 64, wave=wave)
-        self.up3 = WaveUpSampleBlock(128, 64, wave=wave)
-        self.out_conv = torch.nn.Conv2d(64, image_channels, kernel_size=1)
+        self.bottle1 = WaveBottleNeckBlock(256, 128, wave=wave)
+        self.att = ImageAttentionBlock(128, image_size // 4)
+        self.bottle2 = WaveBottleNeckBlock(128, 256, wave=wave)
+        self.res3 = ResidualBlock(256, 256)
+        self.up1 = WaveUpSampleBlock(256, 128, wave=wave)
+        self.res4 = ResidualBlock(128, 128)
+        self.up2 = WaveUpSampleBlock(128, 64, wave=wave)
+        self.out_conv = BaseConvBlock(64, image_channels)
 
     @torch.no_grad()
     def pos_encoding(self, t, channels, embed_size):
@@ -147,17 +180,24 @@ class WaveDiffusion(torch.nn.Module):
             b, c, _, h, w = xh[0].shape
             xh = xh[0].reshape(b, 3 * c, h, w)
             x = torch.cat([xl, xh], dim=1)
-        x1 = self.in_conv(x)
-        x2 = self.down1(x1) + self.pos_encoding(t, 128, self.image_size // 2)
-        x3 = self.down2(x2) + self.pos_encoding(t, 256, self.image_size // 4)
-        x3 = self.att1(x3)
-        x4 = self.down3(x3) + self.pos_encoding(t, 256, self.image_size // 8)
-        x4 = self.att2(x4)
-        x = self.up1(x4, x3) + self.pos_encoding(t, 128, self.image_size // 4)
-        x = self.att3(x)
-        x = self.up2(x, x2) + self.pos_encoding(t, 64, self.image_size // 2)
-        x = self.up3(x, x1) + self.pos_encoding(t, 64, self.image_size)
-        x = self.out_conv(x)
+        s1 = self.short1(x)
+        s2 = self.short2(s1)
+        
+        h = self.in_conv(x)
+        h = self.res1(h)
+        h, skip1 = self.down1(h, self.pos_encoding(t, 128, self.image_size // 2)
+        h = (h + s1) / math.sqrt(2)
+        h = self.res2(h)
+        h, skip2 = self.down2(h, self.pos_encoding(t, 256, self.image_size // 4)
+        h = (h + s2) / math.sqrt(2)
+        h = self.bottle1(h)
+        h = self.att(h)
+        h = self.bottle2(h)
+        h = self.res3(h)
+        h = self.up1(h, skip2, self.pos_encoding(t, 128, self.image_size // 2)
+        h = self.res4(h)
+        h = self.up2(h, skip1, self.pos_encoding(t, 64, self.image_size)
+        x = self.out_conv(h)
         if self.wavespace:
             c = x.shape[1] // 4
             xl = x[:, :c]
