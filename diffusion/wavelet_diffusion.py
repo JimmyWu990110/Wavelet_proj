@@ -74,9 +74,14 @@ class WaveDownSampleBlock(torch.nn.Module):
         )
 
     def forward(self, x):
+        b, c, h, w = x.shape
         xl, xh = self.dwt(x)
-        b, c, _, h, w = xh[0].shape
-        xh = xh[0].reshape(b, 3 * c, h, w)
+        h = h//2
+        w = w//2
+        xh = xh[0][:, :, :, :h, :w]
+        xl = xl[:, :, :h, :w]
+        b, c, _, h, w = xh.shape
+        xh = xh.reshape(b, 3 * c, h, w)
         x = torch.cat([xl, xh], dim=1)
         x = self.conv(x)
         return x
@@ -97,7 +102,10 @@ class WaveUpSampleBlock(torch.nn.Module):
         x = self.bottle(x)
         xl = x[:, :c]
         xh = x[:, c:].reshape(b, c, 3, h, w)
+        h *= 2
+        w *= 2
         x = self.idwt((xl, [xh]))
+        x = torch.nn.functional.pad(x, (0, h - x.shape[2], 0, w - x.shape[3]), 'reflect')
         x = torch.cat([x, skip], dim=1)
         x = self.conv(x)
         return x

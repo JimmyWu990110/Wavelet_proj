@@ -10,7 +10,7 @@ from skimage.metrics import peak_signal_noise_ratio, structural_similarity
 
 
 
-def train(model, optimizer, epochs, train_set, test_set, batch_size, model_name, compute_loss, base_dir=""):
+def train(model, optimizer, epochs, train_set, test_set, batch_size, model_name, compute_loss, base_dir="", **kwargs):
     train_loss_all = []
     test_loss_all = []
     train_loader = DataLoader(train_set, batch_size=batch_size, shuffle=True, num_workers=4)
@@ -24,7 +24,7 @@ def train(model, optimizer, epochs, train_set, test_set, batch_size, model_name,
         for i, data in enumerate(train_loader):
             images, _ = data
             optimizer.zero_grad()
-            loss = compute_loss(model, images)
+            loss = compute_loss(model, images, **kwargs)
             loss.backward()
             optimizer.step()
             train_loss += loss.item()
@@ -36,7 +36,7 @@ def train(model, optimizer, epochs, train_set, test_set, batch_size, model_name,
         for data in test_loader:
             images, _ = data
             with torch.no_grad():
-                loss = model.loss(images)
+                loss = compute_loss(model, images, **kwargs)
             test_loss += loss.item()
         bar.set_postfix({"Epoch": epoch+1, "testing loss": format(test_loss, ".3f")})
         test_loss_all.append(test_loss/len(test_set))
