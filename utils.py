@@ -8,9 +8,8 @@ import cv2
 from skimage.metrics import peak_signal_noise_ratio, structural_similarity
 
 
-
-
 def train(model, optimizer, epochs, train_set, test_set, batch_size, model_name, compute_loss, base_dir="", **kwargs):
+    print(model_name)
     train_loss_all = []
     test_loss_all = []
     train_loader = DataLoader(train_set, batch_size=batch_size, shuffle=True, num_workers=4)
